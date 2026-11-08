@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { X, Check, Sparkles, Building2, Briefcase, AlertCircle, Crown } from 'lucide-react';
+import { X, Check, Sparkles, Building2, Briefcase, AlertCircle, Crown, RefreshCw, Lock } from 'lucide-react';
 import { useClassroomStore } from '../../state/classroomContext';
+import { startCheckout } from '../../lib/payments';
 import {
   B2C_PLANS, INSTITUTION_PLANS, INSTITUTION_PLAN_ORDER, JOB_RADAR_PRICING, formatPrice, formatBytes,
 } from '../../config/pricing';
@@ -11,11 +12,14 @@ const REASONS = {
 };
 
 const btn = 'w-full py-2.5 rounded-xl text-xs font-bold transition disabled:cursor-not-allowed';
+const devLink = 'w-full text-[10px] text-amber-400/80 hover:text-amber-300 underline underline-offset-2';
+const IS_DEV = import.meta.env.DEV;
 
 export default function PricingModal({ onNavigate }) {
   const { pricing, closePricing, subscription, currentUser, institutions, setUserPlan, setInstitutionPlan } = useClassroomStore();
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+  const [busyPlan, setBusyPlan] = useState(null); // plan id while creating a checkout session
   const closeRef = useRef(null);
 
   const isAdmin = currentUser?.role === 'institution_admin';
@@ -40,6 +44,26 @@ export default function PricingModal({ onNavigate }) {
     }
   };
 
+  // Real payment: server creates a Stripe/Paystack session and we redirect to it.
+  // The plan only changes once the provider's webhook confirms payment.
+  const checkout = async (planTier) => {
+    setError('');
+    setNotice('');
+    setBusyPlan(planTier);
+    try {
+      await startCheckout({
+        planTier,
+        userId: currentUser.email, // mock accounts have no separate id yet
+        userEmail: currentUser.email,
+        institutionId: isAdmin ? myInstitution.id : undefined,
+      });
+      // Navigating away; keep the busy state until the page unloads
+    } catch (err) {
+      setError(err.message);
+      setBusyPlan(null);
+    }
+  };
+
   const goToSignIn = () => {
     closePricing();
     onNavigate('classroom');
@@ -53,21 +77,36 @@ export default function PricingModal({ onNavigate }) {
   else if (tier === 'pro') proCta = <button disabled className={`${btn} bg-indigo-500/10 text-indigo-300 border border-indigo-500/30`}>Current plan</button>;
   else {
     proCta = (
-      <button
-        onClick={() => run(() => setUserPlan('pro'), 'You’re on Pro. Unlimited AI generations unlocked.')}
-        className={`${btn} bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white shadow-md shadow-indigo-500/30`}
-      >
-        Upgrade to Pro: {formatPrice(B2C_PLANS.pro.priceMonthly)}/mo
-      </button>
+      <div className="space-y-1.5">
+        <button
+          onClick={() => checkout('pro')}
+          disabled={!!busyPlan}
+          className={`${btn} bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white shadow-md shadow-indigo-500/30 flex items-center justify-center gap-2 disabled:opacity-70`}
+        >
+          {busyPlan === 'pro' ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Lock className="w-3.5 h-3.5" />}
+          {busyPlan === 'pro' ? 'Redirecting to secure checkout…' : `Upgrade to Pro: ${formatPrice(B2C_PLANS.pro.priceMonthly)}/mo`}
+        </button>
+        {IS_DEV && (
+          <button onClick={() => run(() => setUserPlan('pro'), 'Simulated: you’re on Pro (no payment taken).')} className={devLink}>
+            Simulate upgrade without payment (dev only)
+          </button>
+        )}
+      </div>
     );
   }
 
   let freeCta;
   if (tier === 'free' && !isAdmin) freeCta = <button disabled className={`${btn} bg-slate-800 text-slate-400`}>Current plan</button>;
   else if (tier === 'pro') {
-    freeCta = (
-      <button onClick={() => run(() => setUserPlan('free'), 'Switched to Free.')} className={`${btn} border border-slate-700 text-slate-300 hover:border-slate-500`}>
-        Downgrade to Free
+    // Paid cancellations must go through the provider (Stripe customer portal / Paystack manage link),
+    // whose webhook then downgrades the account. Only a dev-only simulation is offered here.
+    freeCta = IS_DEV ? (
+      <button onClick={() => run(() => setUserPlan('free'), 'Simulated: switched to Free.')} className={`${btn} border border-amber-500/40 text-amber-300 hover:border-amber-400`}>
+        Simulate downgrade (dev only)
+      </button>
+    ) : (
+      <button disabled className={`${btn} bg-slate-800 text-slate-500`} title="Manage or cancel from the link in your billing email">
+        Manage billing to downgrade
       </button>
     );
   } else freeCta = <button disabled className={`${btn} bg-slate-800 text-slate-500`}>{isAdmin ? 'Individual plans only' : 'Included'}</button>;
@@ -127,6 +166,7 @@ export default function PricingModal({ onNavigate }) {
                 {INSTITUTION_PLAN_ORDER.map((id) => {
                   const plan = INSTITUTION_PLANS[id];
                   const isCurrent = myInstitution?.subscription.tier === id;
+                  const tooSmall = isAdmin && plan.maxSeats !== null && myInstitution.subscription.currentSeatsUsed > plan.maxSeats;
                   return (
                     <li
                       key={id}
@@ -143,15 +183,35 @@ export default function PricingModal({ onNavigate }) {
                         {plan.streamingHours !== null && ` • ${plan.streamingHours} hrs live streaming`}
                       </p>
                       {isAdmin && (
-                        <button
-                          disabled={isCurrent}
-                          onClick={() => run(() => setInstitutionPlan(myInstitution.id, id), `${myInstitution.name} is now on ${plan.name}.`)}
-                          className={`mt-2 w-full py-1.5 rounded-lg text-[11px] font-bold ${
-                            isCurrent ? 'bg-emerald-500/10 text-emerald-400' : 'border border-slate-700 text-slate-300 hover:border-emerald-500 hover:text-emerald-400'
-                          }`}
-                        >
-                          {isCurrent ? `Current plan • ${myInstitution.subscription.currentSeatsUsed} seats used` : `Switch to ${plan.name}`}
-                        </button>
+                        <>
+                          <button
+                            disabled={isCurrent || tooSmall || !!busyPlan}
+                            onClick={() => checkout(id)}
+                            title={tooSmall ? `You have ${myInstitution.subscription.currentSeatsUsed} students; this plan allows ${plan.maxSeats}.` : undefined}
+                            className={`mt-2 w-full py-1.5 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1.5 disabled:cursor-not-allowed ${
+                              isCurrent
+                                ? 'bg-emerald-500/10 text-emerald-400'
+                                : 'border border-slate-700 text-slate-300 hover:border-emerald-500 hover:text-emerald-400 disabled:opacity-50'
+                            }`}
+                          >
+                            {busyPlan === id && <RefreshCw className="w-3 h-3 animate-spin" />}
+                            {isCurrent
+                              ? `Current plan • ${myInstitution.subscription.currentSeatsUsed} seats used`
+                              : busyPlan === id
+                              ? 'Redirecting to checkout…'
+                              : tooSmall
+                              ? 'Too few seats for your roster'
+                              : `Subscribe to ${plan.name}`}
+                          </button>
+                          {IS_DEV && !isCurrent && !tooSmall && (
+                            <button
+                              onClick={() => run(() => setInstitutionPlan(myInstitution.id, id), `Simulated: ${myInstitution.name} is now on ${plan.name}.`)}
+                              className={`${devLink} mt-1`}
+                            >
+                              Simulate without payment (dev only)
+                            </button>
+                          )}
+                        </>
                       )}
                     </li>
                   );
@@ -185,7 +245,9 @@ export default function PricingModal({ onNavigate }) {
             </span>
           </div>
 
-          <p className="text-[10px] text-slate-500 text-center">Demo mode: no payment is processed. Plan changes apply instantly so you can preview each tier.</p>
+          <p className="text-[10px] text-slate-500 text-center flex items-center justify-center gap-1">
+            <Lock className="w-3 h-3" /> Payments are handled on Stripe or Paystack’s secure checkout. Your plan updates once payment is confirmed.
+          </p>
         </div>
       </div>
     </div>

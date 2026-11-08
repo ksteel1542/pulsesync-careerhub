@@ -33,3 +33,6 @@ secrets/
 
 # Local experimental scripts
 scripts/local/
+
+# Server runtime data (local subscription store)
+server/data/

@@ -15,6 +15,12 @@ import AdminPortal from './components/Institution/AdminPortal';
 // Inventor's Lab pulls in KaTeX + recharts, so it loads only when its tab is opened
 const InventorsLab = lazy(() => import('./components/Lab/InventorsLab'));
 import { useClassroomStore } from './state/classroomContext';
+import { consumeCheckoutReturn } from './lib/payments';
+import { useServerEntitlements } from './lib/useServerEntitlements';
+
+// Read ?checkout=success|cancelled once at startup (module scope, so StrictMode's
+// double render can't consume it twice) and strip it from the URL.
+const CHECKOUT_RETURN = typeof window !== 'undefined' ? consumeCheckoutReturn() : null;
 import PricingModal from './components/Pricing/PricingModal';
 import TierBadge from './components/Pricing/TierBadge';
 
@@ -137,6 +143,8 @@ export default function App() {
   // Global auth state lives in ClassroomStore:
   // currentUser = { name, email, role: 'student' | 'instructor' | 'institution_admin', institutionId, institution, institutionStatus, verified, avatarUrl } | null
   const { currentUser, pricing } = useClassroomStore();
+  useServerEntitlements(); // apply webhook-confirmed plans from the payments server
+  const [checkoutBanner, setCheckoutBanner] = useState(CHECKOUT_RETURN);
 
   // Shared Global Data State
   const [resumeData, setResumeData] = useState(INITIAL_RESUME);
@@ -280,6 +288,26 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      {checkoutBanner && (
+        <div
+          role="status"
+          className={`max-w-7xl mx-auto mt-4 mx-4 sm:mx-auto px-4 py-3 rounded-xl border text-xs flex items-start justify-between gap-3 ${
+            checkoutBanner === 'success'
+              ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+              : 'bg-slate-500/10 border-slate-500/30 text-slate-300'
+          }`}
+        >
+          <span>
+            {checkoutBanner === 'success'
+              ? 'Payment received, thank you! Your plan activates as soon as the payment provider confirms it. Sign in to see it applied.'
+              : 'Checkout cancelled. You haven’t been charged.'}
+          </span>
+          <button onClick={() => setCheckoutBanner(null)} aria-label="Dismiss" className="shrink-0 opacity-70 hover:opacity-100">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* MAIN CONTENT AREA */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
