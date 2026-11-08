@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { X, AlertCircle, Eye, Pencil, FlaskConical, Plus, Trash2, Upload } from 'lucide-react';
 import { LAB_CATEGORIES, CODE_LANGUAGES, SPEC_SUGGESTIONS } from '../../data/labBreakdowns';
 import { EquationBlock } from './Equation';
+import { formatBytes } from '../../config/pricing';
 import { PRESET_AVATARS } from '../../data/avatars';
 import { compileFormula, parseVariableSpecs, FORMULA_FUNCTIONS } from '../../lib/formula';
 import Avatar from '../common/Avatar';
@@ -36,14 +37,21 @@ function buildSpecs(rows) {
   });
 }
 
-function buildMedia(f) {
+function buildMedia(f, storage) {
   const caption = f.mediaCaption.trim().slice(0, 140);
   if (f.mediaFile) {
     const kind = MEDIA_TYPES[extOf(f.mediaFile.name)];
     if (!kind) throw new Error('Attachment must be .glb / .gltf (3D) or .png / .jpg / .webp / .svg (blueprint).');
     if (f.mediaFile.size > MAX_MEDIA_BYTES) throw new Error('Attachment must be 25 MB or smaller.');
+    if (storage && storage.usedBytes + f.mediaFile.size > storage.limitBytes) {
+      const err = new Error(
+        `Not enough Lab storage: this file is ${formatBytes(f.mediaFile.size)} and you have ${formatBytes(Math.max(0, storage.limitBytes - storage.usedBytes))} left of ${formatBytes(storage.limitBytes)}.`
+      );
+      err.code = 'quota';
+      throw err;
+    }
     // Mock upload: browser-local blob URL until a storage API exists
-    return { kind, src: URL.createObjectURL(f.mediaFile), caption: caption || f.mediaFile.name, local: true };
+    return { kind, src: URL.createObjectURL(f.mediaFile), caption: caption || f.mediaFile.name, local: true, bytes: f.mediaFile.size };
   }
   const url = f.mediaUrl.trim();
   if (!url) return null;
@@ -60,7 +68,7 @@ function buildMedia(f) {
 }
 
 /** Turns the form into a breakdown object, or throws a readable Error. */
-function buildPost(f, currentUser) {
+function buildPost(f, currentUser, storage) {
   const title = f.title.trim();
   if (title.length < 5 || title.length > 120) throw new Error('Project title must be 5–120 characters.');
   if (!LAB_CATEGORIES.some((c) => c.id === f.category)) throw new Error('Choose a category.');
@@ -125,11 +133,11 @@ function buildPost(f, currentUser) {
     code: f.code.trim() ? { language: f.language, content: f.code.replace(/\s+$/, '') } : null,
     formula,
     steps: steps.length ? steps : null,
-    media: buildMedia(f), // last: may create a blob URL, so only after everything else validated
+    media: buildMedia(f, storage), // last: may create a blob URL, so only after everything else validated
   };
 }
 
-export default function PublishBreakdownModal({ currentUser, onClose, onPublish }) {
+export default function PublishBreakdownModal({ currentUser, onClose, onPublish, storage, onSeePlans }) {
   const [f, setF] = useState({
     title: '', category: 'aero', tags: '', body: '', code: '', language: 'python',
     formula: '', variables: '', outputUnit: '', steps: '', authorName: '', avatarId: PRESET_AVATARS[2].id,
@@ -148,6 +156,7 @@ export default function PublishBreakdownModal({ currentUser, onClose, onPublish 
   const equationLines = f.equations.split('\n').map((l) => l.trim()).filter(Boolean);
   const [preview, setPreview] = useState(false);
   const [error, setError] = useState('');
+  const [errorCode, setErrorCode] = useState(null);
   const firstField = useRef(null);
   const set = (k) => (e) => setF((s) => ({ ...s, [k]: e.target.value }));
 
@@ -161,9 +170,10 @@ export default function PublishBreakdownModal({ currentUser, onClose, onPublish 
   const submit = (e) => {
     e.preventDefault();
     try {
-      onPublish(buildPost(f, currentUser));
+      onPublish(buildPost(f, currentUser, storage));
     } catch (err) {
       setError(err.message);
+      setErrorCode(err.code ?? null);
     }
   };
 
@@ -349,7 +359,10 @@ export default function PublishBreakdownModal({ currentUser, onClose, onPublish 
               />
             </div>
             <input value={f.mediaCaption} onChange={set('mediaCaption')} className={inputCls} placeholder="Caption (optional)" aria-label="Attachment caption" maxLength={140} />
-            <p className="text-[10px] text-slate-500">3D models: .glb is best (a .gltf must embed its buffers). Up to 25 MB. Linked files must allow cross-origin loading.</p>
+            <p className="text-[10px] text-slate-500">
+              3D models: .glb is best (a .gltf must embed its buffers). Up to 25 MB per file. Linked files must allow cross-origin loading.
+              {storage && ` Lab storage: ${formatBytes(storage.usedBytes)} of ${formatBytes(storage.limitBytes)} used.`}
+            </p>
           </fieldset>
 
           <label className="block">
@@ -391,7 +404,13 @@ export default function PublishBreakdownModal({ currentUser, onClose, onPublish 
 
           {error && (
             <p role="alert" className="flex items-start gap-2 text-[11px] text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded-lg p-2">
-              <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-px" /> {error}
+              <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-px" />
+              <span className="flex-1">{error}</span>
+              {errorCode === 'quota' && onSeePlans && (
+                <button type="button" onClick={onSeePlans} className="shrink-0 font-bold text-indigo-300 hover:text-white underline">
+                  See plans
+                </button>
+              )}
             </p>
           )}
         </div>

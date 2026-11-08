@@ -2,11 +2,13 @@ import React, { useCallback, useState } from 'react';
 import { FlaskConical, Plus, Search } from 'lucide-react';
 import { LAB_CATEGORIES } from '../../data/labBreakdowns';
 import { useClassroomStore } from '../../state/classroomContext';
+import { planLimitsFor } from '../../config/pricing';
 import BreakdownCard from './BreakdownCard';
 import PublishBreakdownModal from './PublishBreakdownModal';
 
 export default function InventorsLab() {
-  const { breakdowns, addBreakdown, removeBreakdown, currentUser } = useClassroomStore();
+  const { breakdowns, addBreakdown, removeBreakdown, currentUser, subscription, openPricing } = useClassroomStore();
+  const limits = planLimitsFor(subscription.tier);
   const [category, setCategory] = useState('all');
   const [query, setQuery] = useState('');
   const [publishing, setPublishing] = useState(false);
@@ -24,10 +26,16 @@ export default function InventorsLab() {
         b.author.name.toLowerCase().includes(q) ||
         b.specs?.some((sp) => sp.field.toLowerCase().includes(q) || sp.value.toLowerCase().includes(q))
     )
-    .sort((a, b) => b.publishedAt.localeCompare(a.publishedAt));
+    // Priority placement: posts by Pro/Enterprise authors first, then newest
+    .sort((a, b) => Number(!!b.priority) - Number(!!a.priority) || b.publishedAt.localeCompare(a.publishedAt));
 
   // Own posts: matching account email, or guest posts while signed out (same browser session)
   const canDelete = (b) => (currentUser ? b.authorEmail === currentUser.email : b.authorEmail === null && b.guest === true);
+  // Lab storage used by the current author (uploaded files only; links don't count)
+  const storage = {
+    usedBytes: breakdowns.filter(canDelete).reduce((sum, b) => sum + (b.media?.bytes ?? 0), 0),
+    limitBytes: limits.labStorageBytes,
+  };
 
   return (
     <div className="space-y-6">
@@ -93,8 +101,10 @@ export default function InventorsLab() {
         <PublishBreakdownModal
           currentUser={currentUser}
           onClose={closeModal}
+          storage={storage}
+          onSeePlans={() => openPricing('storage')}
           onPublish={(post) => {
-            addBreakdown({ ...post, guest: !currentUser });
+            addBreakdown({ ...post, guest: !currentUser, authorTier: subscription.tier, priority: limits.labPriority });
             setPublishing(false);
             setCategory('all');
             setQuery('');

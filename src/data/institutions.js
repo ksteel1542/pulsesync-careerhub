@@ -15,6 +15,7 @@ export const SEED_INSTITUTIONS = [
     contactEmail: 'registrar@ogu.edu',
     status: 'verified', // 'verified' | 'pending'
     createdAt: '2025-01-15T00:00:00Z',
+    subscription: { tier: 'enterprise' }, // see src/config/pricing.js INSTITUTION_PLANS
   },
   {
     id: 'nri',
@@ -25,5 +26,6 @@ export const SEED_INSTITUTIONS = [
     contactEmail: 'admissions@northridge.edu',
     status: 'verified',
     createdAt: '2025-03-02T00:00:00Z',
+    subscription: { tier: 'starter' },
   },
 ];

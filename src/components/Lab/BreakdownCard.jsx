@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Cpu, Trash2, Box, Image as ImageIcon, Sigma, GitBranch } from 'lucide-react';
+import { Cpu, Trash2, Box, Image as ImageIcon, Sigma, GitBranch, Crown } from 'lucide-react';
 import { LAB_CATEGORIES } from '../../data/labBreakdowns';
 import Avatar from '../common/Avatar';
 import Markdown, { CodeBlock } from './Markdown';
@@ -28,7 +28,14 @@ export default function BreakdownCard({ post, canDelete, onDelete }) {
         <div className="flex items-center gap-3 min-w-0">
           <Avatar name={post.author.name} src={post.author.avatarUrl} size="md" />
           <div className="min-w-0">
-            <p className="text-xs font-bold text-slate-900 dark:text-white truncate">{post.author.name}</p>
+            <p className="text-xs font-bold text-slate-900 dark:text-white truncate flex items-center gap-1.5">
+              {post.author.name}
+              {post.priority && (
+                <span className="text-[9px] font-bold uppercase px-1.5 py-px rounded bg-indigo-500/15 text-indigo-300 flex items-center gap-0.5" title="Pro author: priority placement">
+                  <Crown className="w-2.5 h-2.5" /> Pro
+                </span>
+              )}
+            </p>
             <p className="text-[10px] text-slate-500 truncate">
               {post.author.affiliation && `${post.author.affiliation} • `}
               {new Date(post.publishedAt).toLocaleDateString()}

@@ -6,9 +6,11 @@ import { SEED_COURSES } from '../data/courses';
 import { SEED_USERS } from '../data/users';
 import { SEED_BREAKDOWNS } from '../data/labBreakdowns';
 import { EMAIL_RE, FREE_EMAIL_DOMAINS, emailDomainOf, hashPassword } from '../lib/mockAuth';
+import { B2C_PLANS, INSTITUTION_PLANS, DEFAULT_INSTITUTION_PLAN, DEFAULT_BILLING_CYCLE } from '../config/pricing';
 
 // App-wide state: institutions, course catalogs, accounts, faculty invitations,
-// study materials, quizzes, quiz attempts and the signed-in session.
+// study materials, quizzes, quiz attempts, Inventor's Lab posts, subscriptions
+// and the signed-in session.
 // In-memory only (cleared on reload). Each action maps 1:1 to a future API call.
 
 const newId = (prefix) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -19,6 +21,10 @@ const fail = (msg) => {
   throw new Error(msg);
 };
 
+const freeSubscription = () => ({ tier: 'free', billingCycle: DEFAULT_BILLING_CYCLE, aiGenerationsLeft: B2C_PLANS.free.aiGenerations });
+const institutionPlanOf = (inst) => INSTITUTION_PLANS[inst?.subscription?.tier] ?? INSTITUTION_PLANS[DEFAULT_INSTITUTION_PLAN];
+const studentSeatsUsed = (users, institutionId) => users.filter((u) => u.role === 'student' && u.institutionId === institutionId).length;
+
 /** Public view of an account record (never includes the password hash). */
 function toPublicUser(rec, institutions) {
   if (!rec) return null;
@@ -28,6 +34,12 @@ function toPublicUser(rec, institutions) {
     rec.role === 'institution_admin'
       ? instVerified
       : !!inst && instVerified && rec.email.endsWith(`@${inst.emailDomain}`);
+
+  // Verified members of an Enterprise institution get Pro-level features via their school
+  const stored = rec.subscription ?? freeSubscription();
+  const enterpriseMember = rec.role !== 'institution_admin' && verified && inst?.subscription?.tier === 'enterprise';
+  const tier = enterpriseMember ? 'enterprise' : stored.tier; // 'free' | 'pro' | 'enterprise'
+
   return {
     name: rec.name,
     email: rec.email,
@@ -38,6 +50,12 @@ function toPublicUser(rec, institutions) {
     verified,
     avatarUrl: rec.avatarUrl,
     createdAt: rec.createdAt,
+    subscription: {
+      tier,
+      billingCycle: stored.billingCycle,
+      aiGenerationsLeft: tier === 'free' ? stored.aiGenerationsLeft : null, // null = unlimited
+      includedVia: enterpriseMember ? inst.name : null,
+    },
   };
 }
 
@@ -51,10 +69,12 @@ export function ClassroomStoreProvider({ children }) {
   const [attempts, setAttempts] = useState([]); // { id, quizId, email, name, percentage, passed, at }
   const [breakdowns, setBreakdowns] = useState(SEED_BREAKDOWNS); // Inventor's Lab posts
   const [sessionEmail, setSessionEmail] = useState(null);
+  const [guestAiLeft, setGuestAiLeft] = useState(B2C_PLANS.free.aiGenerations); // signed-out visitors are on Free
+  const [pricing, setPricing] = useState({ open: false, reason: null }); // pricing modal
 
   // Latest state for validation inside async/stable actions
   const latest = useRef();
-  latest.current = { institutions, courses, users, invitations };
+  latest.current = { institutions, courses, users, invitations, sessionEmail, guestAiLeft };
 
   const currentUser = useMemo(
     () => toPublicUser(users.find((u) => u.email === sessionEmail), institutions),
@@ -76,9 +96,19 @@ export function ClassroomStoreProvider({ children }) {
         if (role === 'instructor' && isIndependent) fail('Instructor/Faculty accounts must belong to an institution.');
         if (avatarUrl && !/^(https:\/\/|data:image\/)/.test(avatarUrl)) fail('Avatar image URL must start with https://');
         if (us.some((u) => u.email === email)) fail('An account with this email already exists. Sign in instead.');
+        if (role === 'student' && !isIndependent) {
+          const inst = insts.find((i) => i.id === institutionId);
+          const plan = institutionPlanOf(inst);
+          if (plan.maxSeats !== null && studentSeatsUsed(us, institutionId) >= plan.maxSeats) {
+            fail(`${inst.name} has used all ${plan.maxSeats} student seats on its ${plan.name} plan. Ask your institution to upgrade.`);
+          }
+        }
 
         const passwordHash = await hashPassword(password);
-        setUsers((prev) => [...prev, { name: name.trim(), email, role, institutionId, avatarUrl: avatarUrl || null, passwordHash, createdAt: now() }]);
+        setUsers((prev) => [
+          ...prev,
+          { name: name.trim(), email, role, institutionId, avatarUrl: avatarUrl || null, passwordHash, createdAt: now(), subscription: freeSubscription() },
+        ]);
         // An invited instructor who signs up becomes an active roster member
         if (role === 'instructor') setInvitations((prev) => prev.filter((i) => !(i.email === email && i.institutionId === institutionId)));
         setSessionEmail(email);
@@ -114,15 +144,74 @@ export function ClassroomStoreProvider({ children }) {
         const id = `${slugify(name)}-${Math.random().toString(36).slice(2, 6)}`;
         setInstitutions((prev) => [
           ...prev,
-          { id, name, emailDomain: domain, accreditationId, country, contactEmail, status: autoApprove ? 'verified' : 'pending', createdAt: now() },
+          {
+            id, name, emailDomain: domain, accreditationId, country, contactEmail,
+            status: autoApprove ? 'verified' : 'pending',
+            createdAt: now(),
+            subscription: { tier: DEFAULT_INSTITUTION_PLAN },
+          },
         ]);
-        setUsers((prev) => [...prev, { name, email: contactEmail, role: 'institution_admin', institutionId: id, avatarUrl: null, passwordHash, createdAt: now() }]);
+        setUsers((prev) => [
+          ...prev,
+          { name, email: contactEmail, role: 'institution_admin', institutionId: id, avatarUrl: null, passwordHash, createdAt: now(), subscription: freeSubscription() },
+        ]);
         setSessionEmail(contactEmail);
       },
 
       approveInstitution: (id) => setInstitutions((prev) => prev.map((i) => (i.id === id ? { ...i, status: 'verified' } : i))),
 
       signOut: () => setSessionEmail(null),
+
+      // ---------------- Billing (demo: no payment is processed) ----------------
+      /**
+       * Spend one AI generation. Returns true if allowed; false when a Free user
+       * (or signed-out visitor) has none left. Pro/Enterprise are unlimited.
+       */
+      consumeAiGeneration() {
+        const cur = latest.current;
+        const rec = cur.sessionEmail ? cur.users.find((u) => u.email === cur.sessionEmail) : null;
+        if (!rec) {
+          if (cur.guestAiLeft <= 0) return false;
+          cur.guestAiLeft -= 1; // keep the ref in sync so rapid double-clicks can't overspend
+          setGuestAiLeft((n) => Math.max(0, n - 1));
+          return true;
+        }
+        const left = toPublicUser(rec, cur.institutions).subscription.aiGenerationsLeft;
+        if (left === null) return true;
+        if (left <= 0) return false;
+        const spend = (u) => (u.email === rec.email ? { ...u, subscription: { ...(u.subscription ?? freeSubscription()), aiGenerationsLeft: Math.max(0, left - 1) } } : u);
+        cur.users = cur.users.map(spend);
+        setUsers((prev) => prev.map(spend));
+        return true;
+      },
+
+      /** Switch the signed-in user between Free and Pro. Demo stand-in for a checkout flow. */
+      setUserPlan(tier) {
+        const cur = latest.current;
+        if (!B2C_PLANS[tier]) fail('Unknown plan.');
+        const rec = cur.users.find((u) => u.email === cur.sessionEmail);
+        if (!rec) fail('Sign in to change your plan.');
+        if (rec.role === 'institution_admin') fail('Institution accounts are billed on an institutional plan.');
+        const pub = toPublicUser(rec, cur.institutions);
+        if (pub.subscription.includedVia) fail(`Pro features are already included with ${pub.subscription.includedVia}.`);
+        const subscription = { tier, billingCycle: DEFAULT_BILLING_CYCLE, aiGenerationsLeft: tier === 'pro' ? null : B2C_PLANS.free.aiGenerations };
+        setUsers((prev) => prev.map((u) => (u.email === rec.email ? { ...u, subscription } : u)));
+      },
+
+      /** Change an institution's B2B plan (admin only). Blocks downgrades below current seat usage. */
+      setInstitutionPlan(institutionId, tier) {
+        const cur = latest.current;
+        const plan = INSTITUTION_PLANS[tier];
+        if (!plan) fail('Unknown plan.');
+        const rec = cur.users.find((u) => u.email === cur.sessionEmail);
+        if (rec?.role !== 'institution_admin' || rec.institutionId !== institutionId) fail('Only this institution’s admin can change its plan.');
+        const used = studentSeatsUsed(cur.users, institutionId);
+        if (plan.maxSeats !== null && used > plan.maxSeats) fail(`You have ${used} students; the ${plan.name} plan allows ${plan.maxSeats}.`);
+        setInstitutions((prev) => prev.map((i) => (i.id === institutionId ? { ...i, subscription: { tier } } : i)));
+      },
+
+      openPricing: (reason = null) => setPricing({ open: true, reason }),
+      closePricing: () => setPricing({ open: false, reason: null }),
 
       // ---------------- Course catalog (institution admin) ----------------
       saveCourse(institutionId, data, courseId = null) {
@@ -211,9 +300,28 @@ export function ClassroomStoreProvider({ children }) {
     []
   );
 
+  // Institutions as consumers see them: subscription = { tier, maxSeats, currentSeatsUsed } (seats counted live)
+  const institutionsView = useMemo(
+    () =>
+      institutions.map((i) => {
+        const plan = institutionPlanOf(i);
+        return { ...i, subscription: { tier: plan.id, maxSeats: plan.maxSeats, currentSeatsUsed: studentSeatsUsed(users, i.id) } };
+      }),
+    [institutions, users]
+  );
+
+  // Subscription for whoever is using the app right now (signed-out visitors are on Free)
+  const subscription = useMemo(
+    () => currentUser?.subscription ?? { tier: 'free', billingCycle: DEFAULT_BILLING_CYCLE, aiGenerationsLeft: guestAiLeft, includedVia: null },
+    [currentUser, guestAiLeft]
+  );
+
   const value = useMemo(
-    () => ({ institutions, courses, users, invitations, materials, quizzes, attempts, breakdowns, currentUser, ...actions }),
-    [institutions, courses, users, invitations, materials, quizzes, attempts, breakdowns, currentUser, actions]
+    () => ({
+      institutions: institutionsView, courses, users, invitations, materials, quizzes, attempts, breakdowns,
+      currentUser, subscription, pricing, ...actions,
+    }),
+    [institutionsView, courses, users, invitations, materials, quizzes, attempts, breakdowns, currentUser, subscription, pricing, actions]
   );
 
   return <ClassroomStoreContext.Provider value={value}>{children}</ClassroomStoreContext.Provider>;

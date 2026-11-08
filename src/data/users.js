@@ -9,6 +9,7 @@ const seed = (name, email, role, institutionId, createdAt) => ({
   avatarUrl: null,
   passwordHash: null,
   createdAt,
+  subscription: { tier: 'free', billingCycle: 'monthly', aiGenerationsLeft: 3 },
 });
 
 export const SEED_USERS = [

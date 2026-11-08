@@ -15,6 +15,8 @@ import AdminPortal from './components/Institution/AdminPortal';
 // Inventor's Lab pulls in KaTeX + recharts, so it loads only when its tab is opened
 const InventorsLab = lazy(() => import('./components/Lab/InventorsLab'));
 import { useClassroomStore } from './state/classroomContext';
+import PricingModal from './components/Pricing/PricingModal';
+import TierBadge from './components/Pricing/TierBadge';
 
 // --- MOCK INITIAL RESUME DATA ---
 const INITIAL_RESUME = {
@@ -134,7 +136,7 @@ export default function App() {
 
   // Global auth state lives in ClassroomStore:
   // currentUser = { name, email, role: 'student' | 'instructor' | 'institution_admin', institutionId, institution, institutionStatus, verified, avatarUrl } | null
-  const { currentUser } = useClassroomStore();
+  const { currentUser, pricing } = useClassroomStore();
 
   // Shared Global Data State
   const [resumeData, setResumeData] = useState(INITIAL_RESUME);
@@ -195,7 +197,7 @@ export default function App() {
               }`}
             >
               <FileCode className="w-3.5 h-3.5" />
-              <span>Resume / CV Builder</span>
+              <TabLabel full="Resume / CV Builder" short="Resume" />
             </button>
             <button
               onClick={() => setActiveMainTab('career_tools')}
@@ -206,7 +208,7 @@ export default function App() {
               }`}
             >
               <Wrench className="w-3.5 h-3.5" />
-              <span>Career Tools Suite</span>
+              <TabLabel full="Career Tools Suite" short="Career Tools" />
             </button>
             <button
               onClick={() => setActiveMainTab('opportunities')}
@@ -217,7 +219,7 @@ export default function App() {
               }`}
             >
               <Radio className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
-              <span>Job & Grant Radar</span>
+              <TabLabel full="Job & Grant Radar" short="Job Radar" />
             </button>
             <button
               onClick={() => setActiveMainTab('social')}
@@ -239,7 +241,7 @@ export default function App() {
               }`}
             >
               <GraduationCap className="w-3.5 h-3.5" />
-              <span>Virtual Classroom</span>
+              <TabLabel full="Virtual Classroom" short="Classroom" />
             </button>
             <button
               onClick={() => setActiveMainTab('lab')}
@@ -256,6 +258,7 @@ export default function App() {
 
           {/* RIGHT UTILITIES */}
           <div className="flex items-center gap-3 shrink-0">
+            <TierBadge />
             <button
               onClick={() => setDarkMode(!darkMode)}
               className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800 transition"
@@ -343,7 +346,20 @@ export default function App() {
           }}
         />
       )}
+
+      {/* PRICING MODAL (opened from the tier badge or when a Free limit is hit) */}
+      {pricing.open && <PricingModal onNavigate={setActiveMainTab} />}
     </div>
+  );
+}
+
+// Short tab labels below 1700px so all six tabs plus the plan badge fit; full names on wide screens
+function TabLabel({ full, short }) {
+  return (
+    <span title={full}>
+      <span className="min-[1700px]:hidden">{short}</span>
+      <span className="hidden min-[1700px]:inline">{full}</span>
+    </span>
   );
 }
 
@@ -355,6 +371,7 @@ function ResumeBuilderModule({ resumeData, setResumeData, onShare }) {
   const [templateStyle, setTemplateStyle] = useState('modern'); // 'modern' | 'executive' | 'minimal'
   const [accentColor, setAccentColor] = useState('#4f46e5'); // Indigo
   const [atsMetrics, setAtsMetrics] = useState({ score: 88, keywordMatch: 92, formatting: 95, metricsCount: 3 });
+  const { consumeAiGeneration, openPricing } = useClassroomStore();
 
   // Calculate ATS Score live
   useEffect(() => {
@@ -369,6 +386,11 @@ function ResumeBuilderModule({ resumeData, setResumeData, onShare }) {
 
   // AI Bullet Enhancer Simulator
   const enhanceBulletWithAI = (expId, bulletIndex) => {
+    // Free plan: each AI rewrite spends one generation; out of credits → pricing
+    if (!consumeAiGeneration()) {
+      openPricing('ai');
+      return;
+    }
     const original = resumeData.experience.find(e => e.id === expId).bullets[bulletIndex];
     const enhanced = `Engineered robust automated framework for "${original.split(' ')[0] || 'task'}", increasing execution velocity by 42% and optimizing resource consumption.`;
 
@@ -692,6 +714,7 @@ function CareerToolsModule({ resumeData, applications, onShare }) {
   const [companyName, setCompanyName] = useState('OpenAI Labs');
   const [generatedLetter, setGeneratedLetter] = useState('');
   const [isDrafting, setIsDrafting] = useState(false);
+  const { consumeAiGeneration, openPricing } = useClassroomStore();
 
   // STAR Method Interview State
   const [starQuestions, setStarQuestions] = useState([
@@ -705,6 +728,10 @@ function CareerToolsModule({ resumeData, applications, onShare }) {
   ]);
 
   const handleGenerateCoverLetter = () => {
+    if (!consumeAiGeneration()) {
+      openPricing('ai');
+      return;
+    }
     setIsDrafting(true);
     setTimeout(() => {
       setGeneratedLetter(
