@@ -1,7 +1,7 @@
 import express from 'express';
 import { PURCHASABLE_PLANS, BILLING_CYCLES, planFor, RESERVED_KEYS } from '../lib/plans.js';
 import { providers, WebhookSignatureError, ProviderNotConfiguredError } from '../lib/providers.js';
-import { applyEntitlement, getUserSubscription, getInstitutionSubscription } from '../lib/store.js';
+import { applyEntitlement, getUserSubscription, getInstitutionSubscription, DatabaseNotConfiguredError } from '../services/db.js';
 import { config } from '../lib/config.js';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -80,17 +80,22 @@ export function paymentsRouter() {
       const applied = await applyEntitlement(entitlement);
       return res.json({ received: true, applied });
     } catch (err) {
-      console.error('[payments] failed to persist entitlement:', err);
-      return res.status(500).json({ error: 'Persist failed' }); // non-2xx → provider retries
+      // Non-2xx makes Stripe/Paystack retry later, so a DB outage doesn't lose the payment
+      if (err instanceof DatabaseNotConfiguredError) return res.status(503).json({ error: 'Database not configured' });
+      console.error('[payments] failed to persist entitlement:', err.message);
+      return res.status(500).json({ error: 'Persist failed' });
     }
   });
 
   // GET /api/payments/subscription?userId=… | ?institutionId=…  (read-only status for the client)
   router.get('/subscription', async (req, res) => {
     const { userId, institutionId } = req.query;
-    if (isId(userId)) return res.json({ subscription: await getUserSubscription(userId) });
-    if (isId(institutionId)) {
-      return res.json({ subscription: await getInstitutionSubscription(institutionId) });
+    try {
+      if (isId(userId)) return res.json({ subscription: await getUserSubscription(userId) });
+      if (isId(institutionId)) return res.json({ subscription: await getInstitutionSubscription(institutionId) });
+    } catch (err) {
+      if (err instanceof DatabaseNotConfiguredError) return res.status(503).json({ error: 'Database not configured' });
+      return res.status(500).json({ error: 'Could not load subscription' });
     }
     return res.status(400).json({ error: 'userId or institutionId is required' });
   });

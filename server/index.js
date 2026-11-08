@@ -2,6 +2,7 @@ import express from 'express';
 import { config } from './lib/config.js';
 import { providers } from './lib/providers.js';
 import { paymentsRouter } from './routes/payments.js';
+import { isDatabaseConfigured } from './services/db.js';
 
 const app = express();
 app.disable('x-powered-by');
@@ -9,6 +10,7 @@ app.disable('x-powered-by');
 app.get('/api/health', (_req, res) =>
   res.json({
     ok: true,
+    database: isDatabaseConfigured() ? 'supabase' : 'NOT configured',
     providers: Object.fromEntries(Object.entries(providers).map(([name, p]) => [name, { checkout: p.isConfigured(), webhook: p.webhookConfigured() }])),
   })
 );
@@ -27,6 +29,7 @@ app.use((err, _req, res, _next) => {
 
 app.listen(config.port, config.host, () => {
   console.log(`PulseSync API listening on http://${config.host}:${config.port}`);
+  console.log(`  database: ${isDatabaseConfigured() ? 'Supabase ready' : 'NOT configured (set SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY)'}`);
   for (const [name, p] of Object.entries(providers)) {
     console.log(`  ${name}: checkout ${p.isConfigured() ? 'ready' : 'NOT configured'}, webhook ${p.webhookConfigured() ? 'ready' : 'NOT configured'}`);
   }
